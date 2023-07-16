@@ -80,7 +80,39 @@ NSString *const pushPluginApplicationDidBecomeActiveNotification = @"pushPluginA
 
 - (void)application:(UIApplication *)application didReceiveRemoteNotification:(NSDictionary *)userInfo fetchCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler {
     NSLog(@"didReceiveNotification with fetchCompletionHandler");
+    
+    
+    
+    //HERE BE DRAGONS - dirty workaround for https://github.com/havesource/cordova-plugin-push/issues/94
+    static NSMutableDictionary *completedNotifications = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        completedNotifications = [NSMutableDictionary dictionary];
+    });
+    id notId = [userInfo objectForKey:@"notId"]; //moved from below
+    if (completedNotifications[notId] == nil) {
+        NSNumber *start = @0;
+        [completedNotifications setObject:start forKey:notId];
+    }
+    void (^completeAndCount)(NSUInteger) = ^(NSUInteger result) {
+        NSNumber *currentCount = completedNotifications[notId];
+        if (currentCount.integerValue == 0) {
+            completionHandler(result);
+        }
+        int newCount = currentCount.integerValue + 1;
+        NSNumber *newValue = @(newCount);
+        [completedNotifications setObject:newValue forKey:notId];
+        NSLog(@"==================== Tried to complete notification %@ for %d times", notId, newCount);
+    };
+    //END OF DRAGONS. After this, it simply calls completeAndCount() in place of the original completeHandler()
+    //[DISCLAIMER]: if you repeat the same notification body, it will probably have the same notId (it had in my test cases),
+    //  and thus it will fail to call the completion handler, causing a warning. However, I guess that's better than a full
+    //  application crash lol Not sure if that could cause a memory leak or stuff like that... also, not sure if this
+    //  arbitrarily long NSMutableDictionary could grow terribly large and cause issues; I hope your app doesn't get too many
+    //  notifications in its lifetime.
 
+    
+    
     // app is in the background or inactive, so only call notification callback if this is a silent push
     if (application.applicationState != UIApplicationStateActive) {
 
@@ -100,7 +132,7 @@ NSString *const pushPluginApplicationDidBecomeActiveNotification = @"pushPluginA
             NSLog(@"this should be a silent push");
             void (^safeHandler)(UIBackgroundFetchResult) = ^(UIBackgroundFetchResult result){
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    completionHandler(result);
+                    completeAndCount(result);
                 });
             };
 
@@ -126,11 +158,11 @@ NSString *const pushPluginApplicationDidBecomeActiveNotification = @"pushPluginA
             NSLog(@"just put it in the shade");
             //save it for later
             self.launchNotification = userInfo;
-            completionHandler(UIBackgroundFetchResultNewData);
+            completeAndCount(UIBackgroundFetchResultNewData);
         }
 
     } else {
-        completionHandler(UIBackgroundFetchResultNoData);
+        completeAndCount(UIBackgroundFetchResultNoData);
     }
 }
 
